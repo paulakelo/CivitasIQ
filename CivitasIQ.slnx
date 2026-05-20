@@ -1,0 +1,7 @@
+<Solution>
+  <Project Path="CivitasIQ.API/CivitasIQ.API.csproj" />
+  <Project Path="CivitasIQ.Application/CivitasIQ.Application.csproj" />
+  <Project Path="CivitasIQ.Domain/CivitasIQ.Domain.csproj" />
+  <Project Path="CivitasIQ.Infrastructure/CivitasIQ.Infrastructure.csproj" />
+  <Project Path="CivitasIQ.Shared/CivitasIQ.Shared.csproj" />
+</Solution>

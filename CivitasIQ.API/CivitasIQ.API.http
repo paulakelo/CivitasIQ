@@ -1,0 +1,6 @@
+@CivitasIQ.API_HostAddress = http://localhost:5063
+
+GET {{CivitasIQ.API_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###
