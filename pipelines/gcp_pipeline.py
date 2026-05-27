@@ -167,7 +167,7 @@ if __name__ == "__main__":
         clean_data.to_csv(processed_csv_path, index=False)
         print(f"\nSuccess! Cleaned data saved to: {processed_csv_path}")
 
-        # load_to_postgres(clean_data, indicator_name="Gross County Product")
+        load_to_postgres(clean_data, indicator_name="Gross County Product")
         print("\nPipeline ready. Uncomment load_to_postgres() once your DB is seeded with Counties!")
 
     except Exception as e:
