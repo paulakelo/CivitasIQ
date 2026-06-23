@@ -72,7 +72,7 @@ def transform_data(df: pd.DataFrame, indicator_name: str) -> pd.DataFrame:
         df.rename(columns={df.columns[0]: 'CountyName'}, inplace=True)
         df.columns = [str(col).replace('*', '').strip() for col in df.columns]
         
-        df = df[~df['CountyName'].astype(str).str.contains('Total|Source|Kenya', case=False, na=False)]
+        df = df[~df['CountyName'].astype(str).str.contains('Total|Source|Kenya|County', case=False, na=False)]
         df = df[df['CountyName'].astype(str).str.strip() != '']
         
         id_vars = ['CountyName']
