@@ -13,7 +13,7 @@ PROCESSED_DATA_DIR = os.path.join(BASE_DIR, 'data', 'processed')
 load_dotenv()
 DB_URL = os.getenv("DATABASE_URL")
 
-# Comprehensive County Name Mapper (Handles title casing quirks with apostrophes)
+# Comprehensive County Name Mapper
 COUNTY_MAPPER = {
     "Murang'a": "Muranga",
     "Murang'A": "Muranga",
@@ -23,67 +23,48 @@ COUNTY_MAPPER = {
     "Tharaka/Nithi": "Tharaka Nithi",
     "Elgeyo/Marakwet": "Elgeyo Marakwet",
     "Elgeyo-Marakwet": "Elgeyo Marakwet",
+    "Elgeyo Marakwet": "Elgeyo Marakwet",
+    "Elgeyo": "Elgeyo Marakwet",
     "Taita/Taveta": "Taita Taveta",
     "Taita-Taveta": "Taita Taveta",
     "Nairobi City": "Nairobi"
 }
 
-def extract_from_pdf(pdf_path: str, page_number: int) -> pd.DataFrame:
-    print(f"Extracting data from {pdf_path}, page {page_number} using Camelot...")
+def extract_from_pdf(pdf_path: str, pages: str) -> pd.DataFrame:
+    """Extracts tables from a KNBS PDF using Camelot. Accepts page ranges like '32-33'."""
+    print(f"Extracting data from {pdf_path}, pages {pages} using Camelot...")
     
     tables = camelot.read_pdf(
         pdf_path, 
-        pages=str(page_number), 
+        pages=pages, 
         flavor='stream',
         edge_tol=500 
     )
     
     if not tables or tables.n == 0:
-        raise ValueError(f"No tables found on page {page_number}.")
+        raise ValueError(f"No tables found on pages {pages}.")
     
-    df = tables[0].df
+    # NEW: Concatenate all tables found across the page range into one massive DataFrame
+    df = pd.concat([t.df for t in tables], ignore_index=True)
     
-    # Debug raw dump
-    raw_debug_path = os.path.join(PROCESSED_DATA_DIR, f"debug_raw_page_{page_number}.csv")
+    raw_debug_path = os.path.join(PROCESSED_DATA_DIR, f"debug_raw_pages_{pages.replace('-','_')}.csv")
     df.to_csv(raw_debug_path, index=False)
-    print(f"-> Raw Camelot extraction saved to {raw_debug_path}")
     
     return df
 
-def transform_data(df: pd.DataFrame) -> tuple[pd.DataFrame, str]:
-    """
-    Dynamically transforms data based on table structural signature.
-    Returns: (Cleaned Long DataFrame, Indicator Name)
-    """
-    print("Transforming and cleaning data...")
+def transform_data(df: pd.DataFrame, indicator_name: str) -> pd.DataFrame:
+    """Cleans data based on the requested indicator."""
+    print(f"Transforming and cleaning data for '{indicator_name}'...")
 
-    # Look for a signature text snippet to determine if this is the Population Table
-    # Row 0 or 1 usually contains descriptive text in the raw extraction
-    is_population_table = df.astype(str).apply(lambda x: x.str.contains('Population|Density|KPHC', case=False)).any().any()
-
-    if is_population_table:
-        print("-> Detected Table Signature: Projected Population (Page 18)")
-        
-        # Based on your debug file, the first column is the County. 
-        # Columns 1 is 2019 baseline. Columns 4, 5, 6, 7, 8 correspond to 2020, 2021, 2022, 2023, 2024 projections.
-        # We explicitly drop structural meta rows before naming the columns
+    if indicator_name == "Population":
         df.rename(columns={df.columns[0]: 'CountyName'}, inplace=True)
-        
-        # Drop rows that don't represent clear county data
         df = df[~df['CountyName'].astype(str).str.contains('Total|Source|Kenya|County|Projections', case=False, na=False)]
         df = df[df['CountyName'].astype(str).str.strip() != '']
-        
-        # Re-assign semantic column names matching the exact layout of Page 18
-        # Format: County, 2019, Area, Density, 2020, 2021, 2022, 2023, 2024
         df.columns = ['CountyName', '2019', 'AreaSqKm', 'Density', '2020', '2021', '2022', '2023', '2024']
-        
-        indicator_name = "Population"
-        # Melt only the explicit time-series columns (ignoring Area and Density for this Metric payload)
         value_vars = ['2019', '2020', '2021', '2022', '2023', '2024']
         id_vars = ['CountyName']
 
-    else:
-        print("-> Detected Table Signature: Gross County Product (Page 32)")
+    elif indicator_name == "Gross County Product":
         if str(df.columns[0]).isdigit() == False and df.iloc[0].astype(str).str.contains('County', case=False).any():
             df.columns = df.iloc[0]
             df = df[1:]
@@ -94,11 +75,14 @@ def transform_data(df: pd.DataFrame) -> tuple[pd.DataFrame, str]:
         df = df[~df['CountyName'].astype(str).str.contains('Total|Source|Kenya', case=False, na=False)]
         df = df[df['CountyName'].astype(str).str.strip() != '']
         
-        indicator_name = "Gross County Product"
         id_vars = ['CountyName']
         value_vars = [col for col in df.columns if str(col).isdigit()]
 
-    # Global transformations across both formats
+    # NEW: Fix line breaks like "Elgeyo/\nMarakwet" before mapping
+    df['CountyName'] = df['CountyName'].astype(str).str.replace(r'\n', '', regex=True)
+    df['CountyName'] = df['CountyName'].str.replace(r'/', ' ', regex=True)
+    
+    # Global transformations
     df['CountyName'] = df['CountyName'].str.strip().str.title().replace(COUNTY_MAPPER)
     
     if not value_vars:
@@ -116,7 +100,7 @@ def transform_data(df: pd.DataFrame) -> tuple[pd.DataFrame, str]:
     df_long['Year'] = df_long['Year'].astype(int)
     df_long = df_long.dropna(subset=['Value'])
 
-    return df_long, indicator_name
+    return df_long
 
 def load_to_postgres(df: pd.DataFrame, indicator_name: str):
     print(f"Loading '{indicator_name}' metrics to PostgreSQL...")
@@ -129,9 +113,16 @@ def load_to_postgres(df: pd.DataFrame, indicator_name: str):
         result = conn.execute(indicator_query, {"name": indicator_name}).fetchone()
         
         if not result:
-            raise ValueError(f"Indicator '{indicator_name}' not found. Please seed your database via the C# project first.")
+            raise ValueError(f"Indicator '{indicator_name}' not found. Seed the DB first.")
             
         indicator_id = result[0]
+        
+        # --- NEW: Pipeline Idempotency ---
+        # Clear existing data for this indicator to prevent UniqueViolation crashes
+        print(f"-> Cleaning existing records for {indicator_name} to prevent duplicate conflicts...")
+        conn.execute(text('DELETE FROM "Metrics" WHERE "IndicatorId" = :ind_id'), {"ind_id": indicator_id})
+        conn.commit() # Important for SQLAlchemy 2.0
+
         final_df = pd.merge(df, counties, on='CountyName', how='inner')
         
         missing = df[~df['CountyName'].isin(counties['CountyName'])]
@@ -163,24 +154,23 @@ if __name__ == "__main__":
         print(f"ERROR: Could not find raw target file at {PDF_FILE}")
         exit(1)
 
-    # Change this configuration array to ingest whatever pages you want!
-    PAGES_TO_PROCESS = [18, 33] 
+    # NEW: Define exact tasks and page ranges to process together
+    TASKS = [
+        {"indicator": "Population", "pages": "18"},
+        {"indicator": "Gross County Product", "pages": "32-33"} # Combines both pages seamlessly!
+    ]
 
-    for page in PAGES_TO_PROCESS:
+    for task in TASKS:
         try:
-            print(f"\n--- Processing Queue Item: Page {page} ---")
-            raw_data = extract_from_pdf(PDF_FILE, page_number=page)
-            clean_data, extracted_indicator = transform_data(raw_data)
+            print(f"\n--- Processing Queue Item: {task['indicator']} ---")
+            raw_data = extract_from_pdf(PDF_FILE, pages=task['pages'])
+            
+            clean_data = transform_data(raw_data, indicator_name=task['indicator'])
 
-            print(f"Sample of processed data for '{extracted_indicator}':")
-            print(clean_data.head(5))
-
-            # Export storage backup
-            processed_csv_path = os.path.join(PROCESSED_DATA_DIR, f"cleaned_{extracted_indicator.lower().replace(' ', '_')}.csv")
+            processed_csv_path = os.path.join(PROCESSED_DATA_DIR, f"cleaned_{task['indicator'].lower().replace(' ', '_')}.csv")
             clean_data.to_csv(processed_csv_path, index=False)
             
-            # Load straight to PostgreSQL database
-            load_to_postgres(clean_data, indicator_name=extracted_indicator)
+            load_to_postgres(clean_data, indicator_name=task['indicator'])
             
         except Exception as e:
-            print(f"Processing failed for Page {page}: {e}")
+            print(f"Processing failed for {task['indicator']}: {e}")
